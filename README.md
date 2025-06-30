@@ -1,0 +1,1 @@
+el archivo evento3_vant.sh monitorea el demonio en tiempo real mostrando los nombres de los vant en verde, los estados como conversion fallida en rojo y azul cuando continua viendo el estado de las transmisiones. 
