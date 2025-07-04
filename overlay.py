@@ -11,12 +11,12 @@ FFMPEG_PATH = "/usr/bin/ffmpeg"
 GIF_PATH = "/var/www/html/livevideo/img/Drone_aspas_girando.gif"
 FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
-RTMP_INPUT = "rtmp://localhost:1935/cov/"
+RTSP_INPUT = "rtsp://localhost:8554/"
 RTSP_OUTPUT = "rtsp://localhost:8554/"
-STREAMS = ["vant1", "vant2", "vant3", "vant4", "vant5"]
+STREAMS = ["vant3", "vant4", "vant5"]
 CHECK_INTERVAL = 10
 MAX_FAILURES = 1
-MAX_STREAM_FAILURES = 1  # Máximo de fallos permitidos por stream
+MAX_STREAM_FAILURES = 1
 
 # Logging
 logging.basicConfig(
@@ -31,7 +31,7 @@ active_processes = {}
 error_flags = {}
 error_flags_lock = threading.Lock()
 consecutive_failures = 0
-stream_failures = {}  # ✅ CORREGIDO: ahora está definido
+stream_failures = {}
 
 def restart_script():
     logging.warning("Reiniciando el script...")
@@ -46,28 +46,37 @@ def format_stream_name(name):
 def check_stream(stream_name):
     global stream_failures
 
+    stream_url = f"{RTSP_INPUT}{stream_name}"
     command = [
         FFMPEG_PATH,
-        '-rw_timeout', '5000000',
-        '-i', f"{RTMP_INPUT}{stream_name}",
+        '-rtsp_transport', 'tcp',
+        '-probesize', '5000000',
+        '-analyzeduration', '5000000',
+        '-i', stream_url,
         '-v', 'quiet',
-        '-t', '3',
+        '-t', '5',
         '-f', 'null',
-        'null'
+        '-'
     ]
 
+    logging.info(f"[check_stream] Verificando stream: {stream_url}")
     try:
-        subprocess.run(command, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
-        stream_failures[stream_name] = 0
-        return True
+        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+        stderr = result.stderr.decode().strip()
 
-    except subprocess.CalledProcessError as e:
+        if result.returncode == 0 or ("Input #0" in stderr and "Stream #0:0" in stderr):
+            stream_failures[stream_name] = 0
+            logging.info(f"[check_stream] {stream_name} detectado correctamente.")
+            return True
+        else:
+            stream_failures[stream_name] = stream_failures.get(stream_name, 0) + 1
+            logging.warning(f"[check_stream] {stream_name} no detectado (fallo #{stream_failures[stream_name]}): {stderr}")
+            return stream_failures[stream_name] < MAX_STREAM_FAILURES
+
+    except subprocess.TimeoutExpired:
         stream_failures[stream_name] = stream_failures.get(stream_name, 0) + 1
-        logging.warning(f"check_stream no esta transmitiendo {stream_name} (fallo #{stream_failures[stream_name]}): {e.stderr.decode().strip()}")
-
-        if stream_failures[stream_name] >= MAX_STREAM_FAILURES:
-            return False
-        return True
+        logging.error(f"[check_stream] Timeout verificando {stream_name}")
+        return stream_failures[stream_name] < MAX_STREAM_FAILURES
 
 def log_ffmpeg_output(stream_name, process):
     global error_flags
@@ -101,10 +110,10 @@ def start_stream_process(stream_name):
     command = [
         FFMPEG_PATH,
         '-fflags', '+genpts+discardcorrupt',
-        '-rw_timeout', '5000000',
         '-analyzeduration', '1000000',
         '-probesize', '1000000',
-        '-i', f"{RTMP_INPUT}{stream_name}",
+        '-rtsp_transport', 'tcp',
+        '-i', f"{RTSP_INPUT}{stream_name}",
         '-err_detect', 'ignore_err',
         '-ignore_loop', '0',
         '-i', GIF_PATH,
@@ -117,10 +126,7 @@ def start_stream_process(stream_name):
         '-g', '30',
         '-b:v', '3000k',
         '-f', 'rtsp',
-        '-rtsp_transport', 'tcp',
-        '-muxdelay', '0.1',
-        '-muxpreload', '0',
-        f"{RTSP_OUTPUT}{stream_name}"
+        f"{RTSP_OUTPUT}{stream_name}_overlay"
     ]
 
     process = subprocess.Popen(
@@ -132,7 +138,6 @@ def start_stream_process(stream_name):
     )
 
     threading.Thread(target=log_ffmpeg_output, args=(stream_name, process), daemon=True).start()
-
     active_processes[stream_name] = process
     with error_flags_lock:
         error_flags[stream_name] = False
@@ -204,3 +209,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
